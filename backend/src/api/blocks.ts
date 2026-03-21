@@ -35,6 +35,7 @@ import mempool from './mempool';
 import CpfpRepository from '../repositories/CpfpRepository';
 import { parseDATUMTemplateCreator } from '../utils/bitcoin-script';
 import database from '../database';
+import { getBlockFirstSeenFromLogs, getOldestLogTimestampFromLogs, scanLogsForBlocksFirstSeen } from '../utils/file-read';
 
 class Blocks {
   private blocks: BlockExtended[] = [];
@@ -47,6 +48,7 @@ class Blocks {
   private newBlockCallbacks: ((block: BlockExtended, txIds: string[], transactions: TransactionExtended[]) => void)[] = [];
   private newAsyncBlockCallbacks: ((block: BlockExtended, txIds: string[], transactions: MempoolTransactionExtended[]) => Promise<void>)[] = [];
   private classifyingBlocks: boolean = false;
+  private oldestCoreLogTimestamp: number | undefined | null = undefined;
 
   private mainLoopTimeout: number = 120000;
 
@@ -85,6 +87,8 @@ class Blocks {
    * @param quiet - don't print non-essential logs
    * @param addMempoolData - calculate sigops etc
    * @returns Promise<TransactionExtended[]>
+   *
+   * @asyncUnsafe
    */
   private async $getTransactionsExtended(
     blockHash: string,
@@ -106,7 +110,7 @@ class Blocks {
     const mempool = memPool.getMempool();
     let foundInMempool = 0;
     let totalFound = 0;
-    let missing = 0;
+    const missing = 0;
 
     // Copy existing transactions from the mempool
     if (!onlyCoinbase) {
@@ -245,6 +249,8 @@ class Blocks {
    * @param block
    * @param transactions
    * @returns BlockExtended
+   *
+   * @asyncUnsafe
    */
   private async $getBlockExtended(block: IEsploraApi.Block, transactions: TransactionExtended[]): Promise<BlockExtended> {
     const coinbaseTx = transactionUtils.stripCoinbaseTransaction(transactions[0]);
@@ -327,7 +333,7 @@ class Blocks {
       extras.totalInputAmt = null;
     }
 
-    if (['mainnet', 'testnet', 'signet', 'testnet4'].includes(config.MEMPOOL.NETWORK)) {
+    if (['mainnet', 'testnet', 'signet', 'testnet4', 'regtest'].includes(config.MEMPOOL.NETWORK)) {
       let pool: PoolTag;
       if (coinbaseTx !== undefined) {
         pool = await this.$findBlockMiner(coinbaseTx);
@@ -364,6 +370,14 @@ class Blocks {
           extras.matchRate = auditScore.matchRate;
           extras.expectedFees = auditScore.expectedFees;
           extras.expectedWeight = auditScore.expectedWeight;
+        }
+      }
+
+      extras.firstSeen = null;
+      if (config.CORE_RPC.DEBUG_LOG_PATH) {
+        const oldestLog = this.getOldestCoreLogTimestamp();
+        if (oldestLog) {
+          extras.firstSeen = getBlockFirstSeenFromLogs(block.id, block.timestamp, oldestLog);
         }
       }
     }
@@ -449,6 +463,8 @@ class Blocks {
    * Try to find which miner found the block
    * @param txMinerInfo
    * @returns
+   *
+   * @asyncUnsafe
    */
   private async $findBlockMiner(txMinerInfo: TransactionMinerInfo | undefined): Promise<PoolTag> {
     if (txMinerInfo === undefined || txMinerInfo.vout.length < 1) {
@@ -547,6 +563,7 @@ class Blocks {
     }
   }
 
+  /** @asyncUnsafe */
   public async $indexBlockSummary(hash: string, height: number, stale?: boolean): Promise<void> {
     if (config.MEMPOOL.BACKEND === 'esplora') {
       const txs = (await bitcoinApi.$getTxsForBlock(hash, stale)).map(tx => transactionUtils.extendMempoolTransaction(tx));
@@ -610,6 +627,8 @@ class Blocks {
 
   /**
    * [INDEXING] Index expected fees & weight for all audited blocks
+   *
+   * @asyncUnsafe
    */
   public async $generateAuditStats(): Promise<void> {
     const blockIds = await BlocksAuditsRepository.$getBlocksWithoutSummaries();
@@ -650,6 +669,8 @@ class Blocks {
 
   /**
    * [INDEXING] Index transaction classification flags for Goggles
+   *
+   * @asyncSafe
    */
   public async $classifyBlocks(): Promise<void> {
     if (this.classifyingBlocks) {
@@ -830,6 +851,7 @@ class Blocks {
 
   /**
    * [INDEXING] Index all blocks metadata for the mining dashboard
+   * @asyncSafe
    */
   public async $generateBlockDatabase(): Promise<boolean> {
     try {
@@ -907,6 +929,46 @@ class Blocks {
     return await BlocksRepository.$validateChain();
   }
 
+  /**
+   * [INDEXING] Index all blocks first seen time from Bitcoin Core debug logs
+   * 
+   * @asyncUnsafe
+   */
+  public async $indexBlocksFirstSeen(): Promise<void> {
+    const previous = this.oldestCoreLogTimestamp;
+    const oldestLogTimestamp = this.getOldestCoreLogTimestamp(true);
+    const hasLogFileChanged = previous !== undefined && oldestLogTimestamp !== previous;
+
+    if (!oldestLogTimestamp) {
+      return;
+    }
+
+    // If the log file changed since last run, re-try to index blocks marked with sentinel value
+    const blocks = await BlocksRepository.$getBlocksWithoutFirstSeen(hasLogFileChanged);
+
+    if (!blocks?.length) {
+      return;
+    }
+    logger.debug(`Indexing ${blocks.length} block first seen times${hasLogFileChanged ? ' (log file changed since last run)' : ''}`);
+    const startedAt = Date.now();
+    const results = scanLogsForBlocksFirstSeen(blocks, oldestLogTimestamp);
+    const foundCount = results.filter(result => result.firstSeen !== null).length;
+    logger.debug(`Found first seen times of ${foundCount} / ${results.length} blocks in Core logs, saving to database...`);
+    await BlocksRepository.$saveFirstSeenTimes(results);
+
+    const blocksByHash = new Map<string, BlockExtended>(this.blocks.map<[string, BlockExtended]>(block => [block.id, block]));
+
+    for (const { hash, firstSeen } of results) {
+      const cachedBlock = blocksByHash.get(hash);
+      if (cachedBlock?.extras) {
+        cachedBlock.extras.firstSeen = firstSeen;
+      }
+    }
+
+    logger.debug(`Indexed ${foundCount} / ${blocks.length} block first seen times in ${((Date.now() - startedAt) / 1000).toFixed(2)} seconds`);
+  }
+
+  /** @asyncUnsafe */
   public async $updateBlocks(): Promise<number> {
     // warn if this run stalls the main loop for more than 2 minutes
     const timer = this.startTimer();
@@ -1035,7 +1097,7 @@ class Blocks {
             this.updateTimerProgress(timer, `saved block summary for ${this.currentBlockHeight}`);
           }
           if (config.MEMPOOL.CPFP_INDEXING) {
-            this.$saveCpfp(blockExtended.id, this.currentBlockHeight, cpfpSummary);
+            void this.$saveCpfp(blockExtended.id, this.currentBlockHeight, cpfpSummary);
             this.updateTimerProgress(timer, `saved cpfp for ${this.currentBlockHeight}`);
           }
         }
@@ -1103,7 +1165,7 @@ class Blocks {
         this.newBlockCallbacks.forEach((cb) => cb(blockExtended, txIds, transactions));
       }
       if (config.MEMPOOL.CACHE_ENABLED && !memPool.hasPriority() && (block.height % config.MEMPOOL.DISK_CACHE_BLOCK_INTERVAL === 0)) {
-        diskCache.$saveCacheToDisk();
+        void diskCache.$saveCacheToDisk();
       }
 
       // Update Redis cache
@@ -1146,6 +1208,7 @@ class Blocks {
     }
   }
 
+  /** @asyncUnsafe */
   private async updateQuarterEpochBlockTime(): Promise<void> {
     if (this.currentBlockHeight >= 503) {
       try {
@@ -1159,6 +1222,10 @@ class Blocks {
     }
   }
 
+  /**
+   * Index a block if it's missing from the database. Returns the block after indexing
+   * @asyncUnsafe
+   */
   public async $indexBlockByHeight(height: number, skipDb = false): Promise<BlockExtended> {
     if (Common.indexingEnabled() && !skipDb) {
       const dbBlock = await blocksRepository.$getBlockByHeight(height);
@@ -1171,6 +1238,7 @@ class Blocks {
     return this.$indexBlock(hash);
   }
 
+  /** @asyncUnsafe */
   private async $handleReorgs(blockExtended: BlockExtended, timer: any): Promise<void> {
     let forkTail = blockExtended;
     let currentlyIndexed = await blocksRepository.$getBlockByHeight(forkTail.height - 1);
@@ -1242,6 +1310,8 @@ class Blocks {
 
   /**
    * Index a block if it's missing from the database. Returns the block after indexing
+   *
+   * @asyncUnsafe
    */
   public async $indexBlock(hash: string, block?: IEsploraApi.Block, skipDb = false): Promise<BlockExtended> {
     if (Common.indexingEnabled() && !skipDb) {
@@ -1271,6 +1341,7 @@ class Blocks {
 
   /**
    * Get one block by its hash
+   * @asyncUnsafe
    */
   public async $getBlock(hash: string, skipMemoryCache: boolean = false): Promise<BlockExtended | IEsploraApi.Block> {
     // Check the memory cache
@@ -1282,7 +1353,7 @@ class Blocks {
     }
 
     // Not Bitcoin network, return the block as it from the bitcoin backend
-    if (['mainnet', 'testnet', 'signet', 'testnet4'].includes(config.MEMPOOL.NETWORK) === false) {
+    if (['mainnet', 'testnet', 'signet', 'testnet4', 'regtest'].includes(config.MEMPOOL.NETWORK) === false) {
       return await bitcoinCoreApi.$getBlock(hash);
     }
 
@@ -1290,6 +1361,7 @@ class Blocks {
     return await this.$indexBlock(hash);
   }
 
+  /** @asyncUnsafe */
   public async $getStrippedBlockTransactions(hash: string, skipMemoryCache = false,
     skipDBLookup = false, cpfpSummary?: CpfpSummary, blockHeight?: number): Promise<TransactionClassified[]>
   {
@@ -1358,6 +1430,7 @@ class Blocks {
     return summary.transactions;
   }
 
+  /** @asyncUnsafe */
   public async $getSingleTxFromSummary(hash: string, txid: string): Promise<TransactionClassified | null> {
     const txs = await this.$getStrippedBlockTransactions(hash);
     return txs.find(tx => tx.txid === txid) || null;
@@ -1365,15 +1438,16 @@ class Blocks {
 
   /**
    * Get 15 blocks
-   * 
+   *
    * Internally this function uses two methods to get the blocks, and
    * the method is automatically selected:
    *  - Using previous block hash links
    *  - Using block height
-   * 
-   * @param fromHeight 
-   * @param limit 
-   * @returns 
+   *
+   * @param fromHeight
+   * @param limit
+   * @returns
+   * @asyncUnsafe
    */
   public async $getBlocks(fromHeight?: number, limit: number = 15): Promise<BlockExtended[]> {
     let currentHeight = fromHeight !== undefined ? fromHeight : this.currentBlockHeight;
@@ -1405,9 +1479,10 @@ class Blocks {
 
   /**
    * Used for bulk block data query
-   * 
-   * @param fromHeight 
-   * @param toHeight 
+   *
+   * @param fromHeight
+   * @param toHeight
+   * @asyncUnsafe
    */
   public async $getBlocksBetweenHeight(fromHeight: number, toHeight: number): Promise<any> {
     if (!Common.indexingEnabled()) {
@@ -1525,7 +1600,7 @@ class Blocks {
   }
 
   public async $getBlockAuditSummary(hash: string): Promise<BlockAudit | null> {
-    if (['mainnet', 'testnet', 'signet', 'testnet4'].includes(config.MEMPOOL.NETWORK) && Common.auditIndexingEnabled()) {
+    if (['mainnet', 'testnet', 'signet', 'testnet4', 'regtest'].includes(config.MEMPOOL.NETWORK) && Common.auditIndexingEnabled()) {
       return BlocksAuditsRepository.$getBlockAudit(hash);
     } else {
       return null;
@@ -1533,7 +1608,7 @@ class Blocks {
   }
 
   public async $getBlockTxAuditSummary(hash: string, txid: string): Promise<TransactionAudit | null> {
-    if (['mainnet', 'testnet', 'signet', 'testnet4'].includes(config.MEMPOOL.NETWORK) && Common.auditIndexingEnabled()) {
+    if (['mainnet', 'testnet', 'signet', 'testnet4', 'regtest'].includes(config.MEMPOOL.NETWORK) && Common.auditIndexingEnabled()) {
       return BlocksAuditsRepository.$getBlockTxAudit(hash, txid);
     } else {
       return null;
@@ -1556,6 +1631,7 @@ class Blocks {
     return this.currentBlockHeight;
   }
 
+/** @asyncUnsafe */
   public async $indexCPFP(hash: string, height: number, txs?: MempoolTransactionExtended[], stale?: boolean): Promise<CpfpSummary | null> {
     let transactions = txs;
     if (!transactions) {
@@ -1588,6 +1664,7 @@ class Blocks {
     }
   }
 
+  /** @asyncSafe */
   public async $saveCpfp(hash: string, height: number, cpfpSummary: CpfpSummary): Promise<void> {
     try {
       const result = await cpfpRepository.$batchSaveClusters(cpfpSummary.clusters);
@@ -1625,6 +1702,30 @@ class Blocks {
       }
     } catch (e) {
       logger.debug(`Unable to retrieve list of blocks for definition hash ${definitionHash} from db (exception: ${e})`);
+      return null;
+    }
+  }
+
+  public getOldestCoreLogTimestamp(forceRefresh = false): number | null {
+    if (!forceRefresh && this.oldestCoreLogTimestamp !== undefined) {
+      return this.oldestCoreLogTimestamp;
+    }
+    const debugLogPath = config.CORE_RPC.DEBUG_LOG_PATH;
+    if (!debugLogPath) {
+      this.oldestCoreLogTimestamp = null;
+      return null;
+    }
+    try {
+      this.oldestCoreLogTimestamp = getOldestLogTimestampFromLogs(debugLogPath);
+      if (this.oldestCoreLogTimestamp !== null) {
+        logger.info(`Core debug log entries date back to ${new Date(this.oldestCoreLogTimestamp * 1000).toISOString()}`);
+      } else {
+        logger.err(`Could not find oldest timestamp in Core debug log file at ${debugLogPath}`);
+      }
+      return this.oldestCoreLogTimestamp;
+    } catch (e) {
+      this.oldestCoreLogTimestamp = null;
+      logger.err(`Could not read Core debug log file at ${debugLogPath}. Reason: ${e instanceof Error ? e.message : e}`);
       return null;
     }
   }
