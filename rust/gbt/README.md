@@ -100,7 +100,7 @@ Under the hood, a [Node addon](https://nodejs.org/api/addons.html) is a [dynamic
 
 ### package.json
 
-The npm manifest file (`package.json`), which informs the `npm` command.
+The npm [manifest file](https://github.com/npm/cli/blob/latest/docs/content/configuring-npm/package-json.md) (`package.json`), which informs the `npm` command.
 
 ### src/
 
