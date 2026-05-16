@@ -44,9 +44,9 @@ export class CodeTemplateComponent implements OnInit {
   }
 
   npmModuleLink() {
-    let npmLink = `https://www.npmjs.org/package/@mempool/mempool.js`;
+    let npmLink = `https://npm.im/@mempool/mempool.js`;
     if (this.network === 'liquid' || this.network === 'liquidtestnet') {
-      npmLink = `https://www.npmjs.org/package/@mempool/liquid.js`;
+      npmLink = `https://npm.im/@mempool/liquid.js`;
     }
     return npmLink;
   }

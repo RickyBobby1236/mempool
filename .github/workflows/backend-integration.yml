@@ -28,7 +28,6 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: ${{ matrix.node }}
-          registry-url: "https://registry.npmjs.org"
           cache: 'npm'
           cache-dependency-path: '${{ matrix.node }}/integration/backend/package-lock.json'
 
@@ -142,4 +141,3 @@ jobs:
           echo "=== MariaDB logs ==="
           docker compose -f docker-compose.test.yml logs db-test || true
         working-directory: ${{ matrix.node }}/integration/backend
-

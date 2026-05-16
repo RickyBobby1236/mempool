@@ -2,7 +2,7 @@
 
 **gbt:** rust implementation of the getBlockTemplate algorithm
 
-This project was bootstrapped by [napi](https://www.npmjs.com/package/@napi-rs/cli).
+This project was bootstrapped by [napi](https://github.com/napi-rs/napi-rs/tree/main/cli).
 
 ## Installing gbt
 
@@ -26,7 +26,7 @@ If you have already installed the project and only want to run the build, run:
 $ npm run build
 ```
 
-This command uses the [napi build](https://www.npmjs.com/package/@napi-rs/cli) utility to run the Rust build and copy the built library into `./gbt.[TARGET_TRIPLE].node`.
+This command uses the [napi build](https://github.com/napi-rs/napi-rs/tree/main/cli) utility to run the Rust build and copy the built library into `./gbt.[TARGET_TRIPLE].node`.
 
 ## Exploring gbt
 
@@ -100,7 +100,7 @@ Under the hood, a [Node addon](https://nodejs.org/api/addons.html) is a [dynamic
 
 ### package.json
 
-The npm [manifest file](https://docs.npmjs.com/cli/v7/configuring-npm/package-json), which informs the `npm` command.
+The npm manifest file (`package.json`), which informs the `npm` command.
 
 ### src/
 

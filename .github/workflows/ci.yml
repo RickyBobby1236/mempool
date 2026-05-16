@@ -28,7 +28,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          registry-url: "https://registry.npmjs.org"
           cache: 'npm'
           cache-dependency-path: '${{ matrix.node }}/${{ matrix.flavor }}/backend/package-lock.json'
 
@@ -111,7 +110,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          registry-url: "https://registry.npmjs.org"
           cache: 'npm'
           cache-dependency-path: 'assets/frontend/package-lock.json'
 
@@ -224,7 +222,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          registry-url: "https://registry.npmjs.org"
           cache: 'npm'
           cache-dependency-path: '${{ matrix.node }}/${{ matrix.flavor }}/frontend/package-lock.json'
 
