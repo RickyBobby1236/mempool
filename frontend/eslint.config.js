@@ -18,7 +18,7 @@ export default [
   // Node globals for local JS utility scripts in this package
   {
     // Apply to all JS files in this package (including nested ones)
-    files: ['**/*.js', '**/*.cjs', '**/*.mjs'],
+    files: ['**/*.js', '**/*.cjs'],
     languageOptions: {
       globals: {
         require: 'readonly',
