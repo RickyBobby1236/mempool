@@ -134,8 +134,9 @@ jobs:
     steps:
       - name: Determine checkout ref
         id: determine-ref
+        env:
+          REF_INPUT: ${{ github.event.inputs.ref }}
         run: |
-          REF_INPUT="${{ github.event.inputs.ref }}"
           if [[ "$REF_INPUT" =~ ^[0-9]+$ ]]; then
             echo "ref=refs/pull/$REF_INPUT/head" >> $GITHUB_OUTPUT
           else
