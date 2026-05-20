@@ -4,6 +4,7 @@ import * as domino from 'domino';
 import * as express from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as helmet from 'helmet';
 
 const {readFileSync, existsSync} = require('fs');
 const {createProxyMiddleware} = require('http-proxy-middleware');
@@ -55,6 +56,7 @@ function getActiveLocales() {
 
 function app() {
   const server = express();
+  server.use(helmet());
 
   // proxy websocket
   server.get('/api/v1/ws', createProxyMiddleware({
